@@ -33,9 +33,6 @@ python-dateutil>=2.8.0
 # Statistical and Mathematical Libraries
 scipy>=1.9.0
 
-# Additional Visualization Tools
-mpl-toolkits>=3.5.0
-
 # Model Persistence
 cloudpickle>=2.0.0
 

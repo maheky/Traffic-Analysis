@@ -1,587 +1,459 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import xgboost as xgb
-import pickle
 import datetime
 from datetime import timedelta
-import matplotlib.pyplot as plt
-import seaborn as sns
+from pathlib import Path
+import pickle
 
-# Set page configuration
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import streamlit as st
+
+# ============================================================
+# PAGE CONFIG
+# ============================================================
 st.set_page_config(
-    page_title="Traffic Prediction App",
+    page_title="Traffic Intelligence",
     page_icon="🚦",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# Function to create time-based features (same as in your training notebook)
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = BASE_DIR / "traffic_prediction_model.pkl"
+DATA_PATH = BASE_DIR / "traffic.csv"
+
+FEATURES = ["hour", "dayofweek", "month", "year", "dayofyear", "dayofmonth", "weekofyear"]
+DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+PAGES = ["Dashboard", "Predict traffic", "Explore data"]
+
+# ============================================================
+# THEME
+# ============================================================
+C = {
+    "bg": "#0F1317",
+    "surface": "#171C22",
+    "border": "#252C34",
+    "text": "#E8EAED",
+    "muted": "#8B95A1",
+    "amber": "#F5A524",
+    "green": "#3DD68C",
+    "red": "#FF6B5B",
+}
+
+LEVEL_COLORS = {"Light": C["green"], "Moderate": C["amber"], "Heavy": C["red"]}
+
+CSS = f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500&display=swap');
+
+html, body, [class*="css"], .stApp {{ font-family: 'IBM Plex Sans', sans-serif; }}
+h1, h2, h3, .hero-title, .big-number {{ font-family: 'Bricolage Grotesque', sans-serif !important; letter-spacing: -0.02em; }}
+
+.block-container {{ padding-top: 2.2rem; max-width: 1200px; }}
+header[data-testid="stHeader"] {{ background: transparent; }}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {{ background: {C['surface']}; border-right: 1px solid {C['border']}; }}
+.brand {{ display:flex; align-items:center; gap:.6rem; margin-bottom:.2rem; }}
+.brand-mark {{ width:34px; height:34px; border-radius:9px; background:{C['amber']}; display:grid; place-items:center; font-size:1.1rem; }}
+.brand-name {{ font-family:'Bricolage Grotesque'; font-weight:700; font-size:1.15rem; }}
+.side-note {{ color:{C['muted']}; font-size:.85rem; line-height:1.5; }}
+
+/* Hero */
+.hero {{
+  position:relative; overflow:hidden; padding:2.2rem 2.2rem 2rem; border-radius:16px;
+  background:{C['surface']}; border:1px solid {C['border']}; margin-bottom:1.5rem;
+}}
+.hero::after {{ /* road centre-line */
+  content:""; position:absolute; left:0; right:0; bottom:0; height:6px;
+  background:repeating-linear-gradient(90deg, {C['amber']} 0 36px, transparent 36px 64px);
+}}
+.hero-title {{ font-size:2.4rem; font-weight:700; margin:0 0 .4rem; line-height:1.1; }}
+.hero-sub {{ color:{C['muted']}; max-width:56ch; font-size:1.02rem; line-height:1.55; margin:0; }}
+
+/* Metrics */
+[data-testid="stMetric"] {{
+  background:{C['surface']}; border:1px solid {C['border']}; border-radius:12px; padding:1rem 1.1rem;
+}}
+[data-testid="stMetricLabel"] p {{ color:{C['muted']}; font-size:.85rem; }}
+[data-testid="stMetricValue"] {{ font-family:'Bricolage Grotesque'; font-weight:700; }}
+
+/* Result card */
+.result {{
+  background:{C['surface']}; border:1px solid {C['border']}; border-radius:16px; padding:1.6rem 1.8rem; margin:1rem 0 1.4rem;
+}}
+.result-label {{ color:{C['muted']}; font-size:.9rem; margin-bottom:.2rem; }}
+.big-number {{ font-size:3.6rem; font-weight:700; line-height:1; }}
+.pill {{
+  display:inline-block; padding:.25rem .8rem; border-radius:999px; font-size:.85rem; font-weight:500;
+  margin-left:.8rem; vertical-align:middle;
+}}
+.compare {{ color:{C['muted']}; margin-top:.8rem; font-size:.95rem; }}
+.meter {{ height:8px; border-radius:99px; background:{C['border']}; margin-top:1.1rem; overflow:hidden; }}
+.meter > div {{ height:100%; border-radius:99px; }}
+
+/* Feature list */
+.feat {{ padding:1rem 0; border-top:1px solid {C['border']}; }}
+.feat b {{ font-family:'Bricolage Grotesque'; font-size:1.05rem; }}
+.feat p {{ color:{C['muted']}; margin:.25rem 0 0; font-size:.95rem; }}
+
+/* Buttons & tabs */
+.stButton > button {{ border-radius:10px; font-weight:500; padding:.6rem 1rem; }}
+.stButton > button[kind="primary"] {{ color:#14171C; }}
+button[data-baseweb="tab"] {{ font-size:.98rem; }}
+:focus-visible {{ outline:2px solid {C['amber']} !important; outline-offset:2px; }}
+@media (max-width:640px) {{ .hero-title {{ font-size:1.8rem; }} .big-number {{ font-size:2.6rem; }} }}
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
+
+# Matplotlib theme to match the app
+plt.rcParams.update({
+    "figure.facecolor": C["surface"], "axes.facecolor": C["surface"],
+    "axes.edgecolor": C["border"], "axes.labelcolor": C["muted"],
+    "axes.titlecolor": C["text"], "axes.titleweight": "bold", "axes.titlesize": 12,
+    "axes.titlelocation": "left", "axes.spines.top": False, "axes.spines.right": False,
+    "xtick.color": C["muted"], "ytick.color": C["muted"],
+    "grid.color": C["border"], "grid.alpha": 0.8, "text.color": C["text"],
+    "legend.facecolor": C["surface"], "legend.edgecolor": C["border"],
+    "font.size": 10,
+})
+
+
+def show_fig(fig):
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+
+# ============================================================
+# DATA / MODEL
+# ============================================================
 def create_features(df):
-    """
-    Creates time series features from datetime index
-    """
     df = df.copy()
-    df['hour'] = df['DateTime'].dt.hour
-    df['dayofweek'] = df['DateTime'].dt.dayofweek
-    df['month'] = df['DateTime'].dt.month
-    df['year'] = df['DateTime'].dt.year
-    df['dayofyear'] = df['DateTime'].dt.dayofyear
-    df['dayofmonth'] = df['DateTime'].dt.day
-    df['weekofyear'] = df['DateTime'].dt.isocalendar().week
-    
+    dt = df["DateTime"].dt
+    df["hour"] = dt.hour
+    df["dayofweek"] = dt.dayofweek
+    df["month"] = dt.month
+    df["year"] = dt.year
+    df["dayofyear"] = dt.dayofyear
+    df["dayofmonth"] = dt.day
+    df["weekofyear"] = dt.isocalendar().week.astype(int)
     return df
 
-# Function to load model
+
 @st.cache_resource
 def load_model():
     try:
-        # Try to load the saved model
-        with open('traffic_prediction_model.pkl', 'rb') as file:
-            model = pickle.load(file)
-        return model
+        with open(MODEL_PATH, "rb") as f:
+            return pickle.load(f)
     except FileNotFoundError:
-        st.error("Model file not found. Please train and save the model first.")
         return None
 
-# Function to load data
+
 @st.cache_data
 def load_data():
     try:
-        # Try to load the traffic data
-        df = pd.read_csv('traffic.csv')
-        df['DateTime'] = pd.to_datetime(df['DateTime'])
+        df = pd.read_csv(DATA_PATH)
+        df["DateTime"] = pd.to_datetime(df["DateTime"])
         return df
     except FileNotFoundError:
-        st.error("Data file not found. Please upload traffic.csv file.")
         return None
 
-# Function to make predictions
-def predict_traffic(model, input_features):
-    # Make prediction
-    prediction = model.predict(input_features)
-    return prediction[0]
 
-# Main app
+@st.cache_data
+def junction_frame(junction):
+    df = load_data()
+    return create_features(df[df["Junction"] == junction]) if df is not None else None
+
+
+def predict_batch(model, datetimes):
+    frame = create_features(pd.DataFrame({"DateTime": pd.to_datetime(datetimes)}))
+    return np.asarray(model.predict(frame[FEATURES]), dtype=float)
+
+
+def traffic_level(value, ref):
+    low, high = ref.quantile([0.33, 0.66])
+    if value < low:
+        return "Light"
+    return "Moderate" if value < high else "Heavy"
+
+
+def missing_file_error(label, path):
+    st.error(f"{label} not found. Place it next to `app.py`:\n\n`{path}`")
+
+
+# ============================================================
+# NAVIGATION
+# ============================================================
+def go_to(page):
+    st.session_state["page"] = page
+
+
+def sidebar():
+    with st.sidebar:
+        st.markdown(
+            '<div class="brand"><div class="brand-mark">🚦</div>'
+            '<div class="brand-name">Traffic Intelligence</div></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown('<p class="side-note">Forecast and explore junction traffic.</p>', unsafe_allow_html=True)
+        st.write("")
+        page = st.radio("Navigation", PAGES, key="page", label_visibility="collapsed")
+        st.write("")
+        st.divider()
+        st.markdown("**Model**")
+        st.markdown(
+            '<p class="side-note">XGBoost regression on time features: hour, weekday, month, '
+            "year, day of year, day of month and week of year.</p>",
+            unsafe_allow_html=True,
+        )
+    return page
+
+
+# ============================================================
+# DASHBOARD
+# ============================================================
+def show_home_page():
+    st.markdown(
+        '<div class="hero"><h1 class="hero-title">Know how busy the road will be.</h1>'
+        '<p class="hero-sub">Pick a date and time to get a vehicle-count forecast, or dig into '
+        "the historical patterns behind it.</p></div>",
+        unsafe_allow_html=True,
+    )
+
+    j1 = junction_frame(1)
+    if j1 is None:
+        missing_file_error("Traffic dataset", DATA_PATH)
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Records", f"{len(j1):,}")
+    c2.metric("Average vehicles / hour", f"{j1['Vehicles'].mean():,.0f}")
+    c3.metric("Peak vehicles / hour", f"{j1['Vehicles'].max():,.0f}")
+    c4.metric("Busiest hour", f"{j1.groupby('hour')['Vehicles'].mean().idxmax():02d}:00")
+
+    st.write("")
+    left, right = st.columns([3, 2], gap="large")
+
+    with left:
+        st.subheader("A typical week")
+        grid = j1.pivot_table(index="dayofweek", columns="hour", values="Vehicles", aggfunc="mean")
+        fig, ax = plt.subplots(figsize=(9, 3.6))
+        sns.heatmap(grid, cmap="YlOrBr", ax=ax, cbar_kws={"label": "Avg vehicles", "shrink": 0.85},
+                    yticklabels=DAY_NAMES, linewidths=0, rasterized=True)
+        ax.set_xlabel("Hour of day")
+        ax.set_ylabel("")
+        ax.tick_params(axis="y", rotation=0)
+        show_fig(fig)
+
+    with right:
+        st.subheader("What you can do")
+        st.markdown(
+            '<div class="feat"><b>Forecast a moment</b><p>Get a vehicle count, a congestion level '
+            "and how it compares with a usual hour.</p></div>"
+            '<div class="feat"><b>Read the patterns</b><p>See how traffic shifts by hour, weekday '
+            "and month.</p></div>"
+            '<div class="feat"><b>Inspect the data</b><p>Filter any junction and date range, then '
+            "download the records.</p></div>",
+            unsafe_allow_html=True,
+        )
+
+    st.write("")
+    b1, b2 = st.columns(2)
+    b1.button("Predict traffic", type="primary", use_container_width=True,
+              on_click=go_to, args=("Predict traffic",))
+    b2.button("Explore data", use_container_width=True, on_click=go_to, args=("Explore data",))
+
+
+# ============================================================
+# PREDICT
+# ============================================================
+def show_predict_page():
+    st.title("Predict traffic")
+    st.caption("Choose a date and time. Junction 1.")
+
+    model = load_model()
+    j1 = junction_frame(1)
+    if model is None:
+        missing_file_error("Model", MODEL_PATH)
+        return
+    if j1 is None:
+        missing_file_error("Traffic dataset", DATA_PATH)
+        return
+
+    min_date = j1["DateTime"].min().date()
+    max_hist = j1["DateTime"].max().date()
+    max_allowed = max_hist + timedelta(days=365)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        pred_date = st.date_input(
+            "Date", value=max_hist, min_value=min_date, max_value=max_allowed,
+            help=f"Historical data runs to {max_hist:%d %b %Y}. Later dates are forecasts.",
+        )
+    with col2:
+        pred_time = st.time_input("Time", value=datetime.time(12, 0), step=3600)
+
+    is_future = pred_date > max_hist
+    if is_future:
+        st.info("This date is after the historical data, so the result is a pure forecast.")
+
+    if not st.button("Predict traffic", type="primary", use_container_width=True):
+        st.caption("Press Predict traffic to see the result.")
+        return
+
+    with st.spinner("Estimating traffic..."):
+        when = datetime.datetime.combine(pred_date, pred_time)
+        value = max(float(predict_batch(model, [when])[0]), 0.0)
+        hours = [datetime.datetime.combine(pred_date, datetime.time(h)) for h in range(24)]
+        curve = np.clip(predict_batch(model, hours), 0, None)
+
+    level = traffic_level(value, j1["Vehicles"])
+    color = LEVEL_COLORS[level]
+    typical = j1.loc[(j1["hour"] == pred_time.hour) & (j1["dayofweek"] == pred_date.weekday()), "Vehicles"].mean()
+    delta = (value - typical) / typical * 100 if typical else 0
+    direction = "above" if delta >= 0 else "below"
+    pct = min(value / j1["Vehicles"].max(), 1) * 100
+
+    st.markdown(
+        f'<div class="result"><div class="result-label">Predicted vehicles at '
+        f'{pred_time:%H:%M} on {pred_date:%a %d %b %Y}</div>'
+        f'<div><span class="big-number">{int(round(value)):,}</span>'
+        f'<span class="pill" style="background:{color}22;color:{color}">{level} traffic</span></div>'
+        f'<div class="compare">{abs(delta):.0f}% {direction} the usual {DAY_NAMES[pred_date.weekday()]} '
+        f"at this hour ({typical:,.0f} vehicles).</div>"
+        f'<div class="meter"><div style="width:{pct:.0f}%;background:{color}"></div></div></div>',
+        unsafe_allow_html=True,
+    )
+
+    st.subheader("The day around it")
+    fig, ax = plt.subplots(figsize=(12, 4))
+    day_hist = j1[j1["DateTime"].dt.date == pred_date]
+    if not day_hist.empty:
+        ax.plot(day_hist["hour"], day_hist["Vehicles"], color=C["muted"], marker="o", ms=4,
+                lw=1.8, label="Recorded")
+    ax.plot(range(24), curve, color=C["amber"], lw=2.4, label="Model estimate")
+    ax.axvline(pred_time.hour, color=C["text"], ls="--", lw=1, alpha=0.6)
+    ax.scatter([pred_time.hour], [curve[pred_time.hour]], s=90, color=C["amber"], zorder=5)
+    ax.set_xticks(range(0, 24, 2))
+    ax.set_xlabel("Hour of day")
+    ax.set_ylabel("Vehicles")
+    ax.grid(True, axis="y")
+    ax.legend(loc="upper left")
+    show_fig(fig)
+
+    if day_hist.empty:
+        st.caption("No recorded data exists for this date, so only the model estimate is shown.")
+
+
+# ============================================================
+# EXPLORE
+# ============================================================
+def show_data_exploration_page():
+    st.title("Explore data")
+    st.caption("Filter a junction and date range, then look at trends, patterns and correlations.")
+
+    raw = load_data()
+    if raw is None:
+        missing_file_error("Traffic dataset", DATA_PATH)
+        return
+
+    f1, f2, f3 = st.columns([1, 2, 2])
+    junction = f1.selectbox("Junction", sorted(raw["Junction"].unique()))
+    df = junction_frame(junction)
+    min_d, max_d = df["DateTime"].min().date(), df["DateTime"].max().date()
+    start = f2.date_input("Start date", value=min_d, min_value=min_d, max_value=max_d, key="ex_start")
+    end = f3.date_input("End date", value=min(max_d, start + timedelta(days=30)),
+                        min_value=start, max_value=max_d, key="ex_end")
+
+    view = df[(df["DateTime"].dt.date >= start) & (df["DateTime"].dt.date <= end)]
+    if view.empty:
+        st.warning("No records in this range. Widen the dates.")
+        return
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Records", f"{len(view):,}")
+    m2.metric("Average", f"{view['Vehicles'].mean():,.0f}")
+    m3.metric("Maximum", f"{view['Vehicles'].max():,.0f}")
+    m4.metric("Minimum", f"{view['Vehicles'].min():,.0f}")
+    st.write("")
+
+    tab_trend, tab_pattern, tab_corr, tab_data = st.tabs(
+        ["Trend", "Patterns", "Correlation", "Records"]
+    )
+
+    with tab_trend:
+        series = view.set_index("DateTime")["Vehicles"]
+        daily = (end - start).days > 31
+        if daily:
+            series = series.resample("D").mean()
+        fig, ax = plt.subplots(figsize=(12, 4.5))
+        ax.plot(series.index, series.values, color=C["amber"], lw=1.6)
+        ax.fill_between(series.index, series.values, color=C["amber"], alpha=0.12)
+        ax.set_ylabel("Vehicles" + (" (daily average)" if daily else ""))
+        ax.grid(True, axis="y")
+        fig.autofmt_xdate()
+        show_fig(fig)
+
+    with tab_pattern:
+        a, b = st.columns(2)
+        with a:
+            st.markdown("**By hour**")
+            hourly = view.groupby("hour")["Vehicles"].mean()
+            fig, ax = plt.subplots(figsize=(6, 3.6))
+            ax.bar(hourly.index, hourly.values, color=C["amber"], width=0.75)
+            ax.set_xlabel("Hour of day")
+            ax.set_ylabel("Avg vehicles")
+            ax.grid(True, axis="y")
+            show_fig(fig)
+        with b:
+            st.markdown("**By weekday**")
+            weekly = view.groupby("dayofweek")["Vehicles"].mean().reindex(range(7))
+            fig, ax = plt.subplots(figsize=(6, 3.6))
+            ax.bar(DAY_NAMES, weekly.values, color=C["green"], width=0.65)
+            ax.set_ylabel("Avg vehicles")
+            ax.grid(True, axis="y")
+            show_fig(fig)
+
+        st.markdown("**Hour and weekday together**")
+        grid = view.pivot_table(index="dayofweek", columns="hour", values="Vehicles", aggfunc="mean")
+        fig, ax = plt.subplots(figsize=(12, 3.6))
+        sns.heatmap(grid, cmap="YlOrBr", ax=ax, yticklabels=[DAY_NAMES[i] for i in grid.index],
+                    cbar_kws={"label": "Avg vehicles"}, rasterized=True)
+        ax.set_xlabel("Hour of day")
+        ax.set_ylabel("")
+        ax.tick_params(axis="y", rotation=0)
+        show_fig(fig)
+
+    with tab_corr:
+        corr = df[FEATURES + ["Vehicles"]].corr()
+        fig, ax = plt.subplots(figsize=(9, 6.5))
+        sns.heatmap(corr, annot=True, fmt=".2f", cmap="vlag", center=0, ax=ax,
+                    linewidths=0.5, linecolor=C["bg"], annot_kws={"size": 9})
+        st.caption("Correlation of each time feature with vehicle count, across the full junction history.")
+        show_fig(fig)
+
+    with tab_data:
+        table = view[["DateTime", "Junction", "Vehicles"]]
+        st.dataframe(table, use_container_width=True, height=420, hide_index=True)
+        st.download_button("Download CSV", table.to_csv(index=False).encode(),
+                           file_name=f"junction_{junction}_{start}_{end}.csv", mime="text/csv")
+
+
+# ============================================================
+# MAIN
+# ============================================================
 def main():
-    # Initialize session state for page navigation
-    if 'current_page' not in st.session_state:
-        st.session_state.current_page = 'home'
-    
-    # Navigation logic
-    if st.session_state.current_page == 'home':
+    st.session_state.setdefault("page", PAGES[0])
+    page = sidebar()
+    if page == "Dashboard":
         show_home_page()
-    elif st.session_state.current_page == 'predict':
+    elif page == "Predict traffic":
         show_predict_page()
-    elif st.session_state.current_page == 'explore':
+    else:
         show_data_exploration_page()
 
-def show_home_page():
-    # Custom CSS for beautiful gradient background and styling
-    st.markdown("""
-    <style>
-    .main-header {
-        text-align: center;
-        padding: 2rem 0;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 20px;
-        margin-bottom: 2rem;
-        color: white;
-    }
-    .home-title {
-        font-size: 3rem;
-        font-weight: bold;
-        margin-bottom: 1rem;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-    }
-    .home-subtitle {
-        font-size: 1.2rem;
-        margin-bottom: 2rem;
-        opacity: 0.9;
-    }
-    .feature-card {
-        background: white;
-        padding: 2rem;
-        border-radius: 15px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.1);
-        margin: 1rem 0;
-        border-left: 5px solid #667eea;
-    }
-    /* Simple Main Predict Button */
-    .main-predict-button {
-        background: linear-gradient(135deg, #4facfe 0%, #667eea 100%) !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 15px !important;
-        padding: 25px 50px !important;
-        font-size: 28px !important;
-        font-weight: 600 !important;
-        text-align: center !important;
-        width: 100% !important;
-        height: 100px !important;
-        text-transform: uppercase !important;
-        letter-spacing: 1px !important;
-        transition: opacity 0.2s ease !important;
-    }
-    .main-predict-button:hover {
-        opacity: 0.9 !important;
-    }
-    
-    /* Simple Professional Secondary Buttons */
-    .secondary-button {
-        background: linear-gradient(135deg, #4facfe 0%, #667eea 100%) !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 12px !important;
-        padding: 15px 30px !important;
-        font-size: 16px !important;
-        font-weight: 500 !important;
-        text-align: center !important;
-        transition: opacity 0.2s ease !important;
-        width: 100% !important;
-        height: 60px !important;
-    }
-    .secondary-button:hover {
-        opacity: 0.9 !important;
-    }
-    
-    /* Simple Explore Data Button */
-    .explore-button {
-        background: linear-gradient(135deg, #4facfe 0%, #667eea 100%) !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 12px !important;
-        padding: 15px 30px !important;
-        font-size: 16px !important;
-        font-weight: 500 !important;
-        text-align: center !important;
-        transition: opacity 0.2s ease !important;
-        width: 100% !important;
-        height: 60px !important;
-    }
-    .explore-button:hover {
-        opacity: 0.9 !important;
-    }
-    
-    /* CTA Section Enhancement */
-    .cta-section {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-        border-radius: 25px;
-        padding: 50px 30px;
-        margin: 40px 0;
-        text-align: center;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-    }
-    .cta-title {
-        font-size: 2.5rem;
-        font-weight: 700;
-        margin-bottom: 20px;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        text-shadow: none;
-    }
-    .cta-subtitle {
-        font-size: 1.3rem;
-        color: #555;
-        margin-bottom: 40px;
-        line-height: 1.6;
-    }
-    
-    /* Button Container */
-    .button-container {
-        margin: 30px 0;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    # Main header
-    st.markdown("""
-    <div class="main-header">
-        <div class="home-title">🚦 TRAFFIC PREDICTION</div>
-        <div class="home-subtitle">
-            Predict traffic flow with advanced machine learning algorithms.<br>
-            Get accurate forecasts for better traffic management and planning.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Features section
-    st.markdown("## ✨ Features")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("""
-        <div class="feature-card">
-            <h3>🎯 Accurate Predictions</h3>
-            <p>Using XGBoost machine learning model trained on historical traffic data to provide reliable forecasts.</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown("""
-        <div class="feature-card">
-            <h3>📊 Visual Analytics</h3>
-            <p>Interactive charts and graphs to visualize traffic patterns and understand peak hours.</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown("""
-        <div class="feature-card">
-            <h3>⏰ Time-based Analysis</h3>
-            <p>Analyze traffic patterns by hour, day, week, and seasonal variations for comprehensive insights.</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown("""
-        <div class="feature-card">
-            <h3>🔍 Data Exploration</h3>
-            <p>Explore historical traffic data with advanced filtering and correlation analysis tools.</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Enhanced Call-to-action section
-    st.markdown("""
-    <div class="cta-section">
-        <div class="cta-title">Ready to predict traffic?</div>
-        <div class="cta-subtitle">
-            Experience the power of AI-driven traffic forecasting<br>
-            Get instant, accurate predictions with our advanced system
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Center the buttons with enhanced styling
-    col1, col2, col3 = st.columns([0.5, 3, 0.5])
-    
-    with col2:
-        # MASSIVE Professional Main Predict Button
-        st.markdown('<div class="button-container">', unsafe_allow_html=True)
-        
-        # Apply simple button styles matching your theme
-        st.markdown("""
-        <style>
-        /* Simple Main START PREDICTING Button */
-        div[data-testid="stButton"] > button[kind="primary"],
-        div[data-testid="stButton"] > button:first-child,
-        .stButton > button,
-        button[data-testid="baseButton-primary"] {
-            background: linear-gradient(135deg, #4facfe 0%, #667eea 100%) !important;
-            color: white !important;
-            border: none !important;
-            border-radius: 15px !important;
-            padding: 25px 50px !important;
-            font-size: 28px !important;
-            font-weight: 600 !important;
-            text-align: center !important;
-            width: 100% !important;
-            height: 100px !important;
-            text-transform: uppercase !important;
-            letter-spacing: 1px !important;
-            transition: opacity 0.2s ease !important;
-        }
-        div[data-testid="stButton"] > button[kind="primary"]:hover,
-        div[data-testid="stButton"] > button:first-child:hover,
-        .stButton > button:hover {
-            opacity: 0.9 !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
-        # HUGE Main predict button
-        if st.button("🚀 START PREDICTING", key="start_btn", help="Click to go to prediction page", 
-                    type="primary", use_container_width=True):
-            st.session_state.current_page = 'predict'
-            st.rerun()
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        # Secondary buttons with professional styling
-        col_a, col_b = st.columns(2, gap="large")
-        
-        # Simple secondary buttons styling
-        st.markdown("""
-        <style>
-        div[data-testid="stButton"] > button[kind="secondary"] {
-            background: linear-gradient(135deg, #4facfe 0%, #667eea 100%) !important;
-            color: white !important;
-            border: none !important;
-            border-radius: 12px !important;
-            padding: 15px 30px !important;
-            font-size: 16px !important;
-            font-weight: 500 !important;
-            text-align: center !important;
-            width: 100% !important;
-            height: 60px !important;
-            transition: opacity 0.2s ease !important;
-        }
-        div[data-testid="stButton"] > button[kind="secondary"]:hover {
-            opacity: 0.9 !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
-        with col_a:
-            if st.button("📊 Explore Data", key="explore_btn", type="secondary", use_container_width=True):
-                st.session_state.current_page = 'explore'
-                st.rerun()
-        
-        # Simple Quick Predict button styling
-        st.markdown("""
-        <style>
-        .quick-predict-btn button {
-            background: linear-gradient(135deg, #4facfe 0%, #667eea 100%) !important;
-            color: white !important;
-            border: none !important;
-            border-radius: 12px !important;
-            padding: 15px 30px !important;
-            font-size: 16px !important;
-            font-weight: 500 !important;
-            text-align: center !important;
-            width: 100% !important;
-            height: 60px !important;
-            transition: opacity 0.2s ease !important;
-        }
-        .quick-predict-btn button:hover {
-            opacity: 0.9 !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
-        with col_b:
-            st.markdown('<div class="quick-predict-btn">', unsafe_allow_html=True)
-            if st.button("🔮 Quick Predict", key="predict_btn", use_container_width=True):
-                st.session_state.current_page = 'predict'
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-def show_predict_page():
-    # Navigation back to home
-    if st.button("← Back to Home", key="back_home"):
-        st.session_state.current_page = 'home'
-        st.rerun()
-    
-    # Add the header with image and title
-    col1, col2 = st.columns([1, 5])
-    
-    with col1:
-        try:
-            st.image("analytics_icon.png", width=150)
-        except:
-            st.markdown("# 📊")
-    
-    with col2:
-        st.title("Traffic Prediction App")
-    
-    # Load model and data
-    model = load_model()
-    data = load_data()
-    
-    if model is None or data is None:
-        st.warning("Please ensure model and data files are available.")
-        
-        uploaded_model = st.file_uploader("Upload trained model file (pkl)", type=['pkl'])
-        if uploaded_model is not None:
-            with open('traffic_prediction_model.pkl', 'wb') as f:
-                f.write(uploaded_model.getvalue())
-            st.success("Model uploaded successfully! Please refresh the page.")
-            
-        uploaded_data = st.file_uploader("Upload traffic data (csv)", type=['csv'])
-        if uploaded_data is not None:
-            data = pd.read_csv(uploaded_data)
-            data.to_csv('traffic.csv', index=False)
-            st.success("Data uploaded successfully! Please refresh the page.")
-        
-        return
-    
-    # Filter data for Junction 1
-    j_1 = data[data['Junction'] == 1].copy()
-    j_1 = create_features(j_1)
-    
-    # Define the features used in the model
-    FEATURES = ['hour', 'dayofweek', 'month', 'year', 'dayofyear', 'dayofmonth', 'weekofyear']
-    
-    st.header("Predict Traffic")
-    
-    st.subheader("Input Parameters")
-    
-    # Date and time inputs - restricted to 2017-2019
-    prediction_date = st.date_input(
-        "Select Date",
-        value=datetime.date(2017, 1, 1),
-        min_value=datetime.date(2017, 1, 1),
-        max_value=datetime.date(2019, 12, 31)
-    )
-    
-    prediction_time = st.time_input(
-        "Select Time",
-        datetime.time(12, 0)
-    )
-    
-    # Combine date and time
-    prediction_datetime = datetime.datetime.combine(prediction_date, prediction_time)
-    
-    # Create a dataframe with the datetime
-    input_df = pd.DataFrame({'DateTime': [prediction_datetime]})
-    
-    # Create features
-    input_df = create_features(input_df)
-    
-    # Select only the required features
-    input_features = input_df[FEATURES]
-    
-    # Make prediction when the button is clicked
-    if st.button("Predict Traffic"):
-        with st.spinner('Predicting...'):
-            # Get the prediction
-            prediction = predict_traffic(model, input_features)
-            
-            # Display the prediction only (no historical average or difference)
-            st.success(f"Predicted Traffic: **{int(prediction)}** vehicles")
-            
-            # Show traffic pattern chart below the prediction
-            st.subheader(f"Traffic Pattern for {prediction_date}")
-            
-            # Filter data for the selected date
-            selected_date_data = j_1[j_1['DateTime'].dt.date == prediction_date]
-            
-            if not selected_date_data.empty:
-                # Use actual historical data
-                fig, ax = plt.subplots(figsize=(10, 4))  # Made smaller: was (12, 6)
-                sns.lineplot(x='hour', y='Vehicles', data=selected_date_data, ax=ax, marker='o', linewidth=2, markersize=4)
-                ax.set_xticks(range(0, 24))
-                ax.set_xlabel('Hour of Day')
-                ax.set_ylabel('Number of Vehicles')
-                ax.set_title(f'Actual Hourly Traffic Pattern on {prediction_date}')
-                ax.grid(True, alpha=0.3)
-                
-                # Highlight the selected hour
-                selected_hour = prediction_time.hour
-                ax.axvline(x=selected_hour, color='red', linestyle='--', alpha=0.7, label=f'Selected Hour ({selected_hour}:00)')
-                ax.legend()
-                
-                st.pyplot(fig)
-            else:
-                # Generate predicted values for all 24 hours
-                st.info("No historical data available. Showing predicted traffic pattern for the entire day.")
-                
-                # Create predictions for all 24 hours
-                hourly_predictions = []
-                hours = list(range(24))
-                
-                for hour in hours:
-                    # Create datetime for each hour
-                    hour_datetime = datetime.datetime.combine(prediction_date, datetime.time(hour, 0))
-                    hour_df = pd.DataFrame({'DateTime': [hour_datetime]})
-                    hour_df = create_features(hour_df)
-                    hour_features = hour_df[FEATURES]
-                    
-                    # Make prediction for this hour
-                    hour_prediction = predict_traffic(model, hour_features)
-                    hourly_predictions.append(hour_prediction)
-                
-                # Create the predicted traffic pattern chart
-                fig, ax = plt.subplots(figsize=(10, 4))  # Made smaller: was (12, 6)
-                ax.plot(hours, hourly_predictions, marker='o', linewidth=2, markersize=4)
-                ax.set_xticks(range(0, 24))
-                ax.set_xlabel('Hour of Day')
-                ax.set_ylabel('Predicted Vehicles')
-                ax.set_title(f'Predicted Hourly Traffic Pattern on {prediction_date}')
-                ax.grid(True, alpha=0.3)
-                
-                # Highlight the selected hour
-                selected_hour = prediction_time.hour
-                ax.axvline(x=selected_hour, color='red', linestyle='--', alpha=0.7, label=f'Selected Hour ({selected_hour}:00)')
-                
-                # Highlight the predicted point for selected hour
-                ax.scatter([selected_hour], [hourly_predictions[selected_hour]], 
-                         color='red', s=100, zorder=5, label=f'Your Prediction: {int(hourly_predictions[selected_hour])} vehicles')
-                
-                ax.legend()
-                st.pyplot(fig)
-
-def show_data_exploration_page():
-    # Navigation back to home
-    if st.button("← Back to Home", key="back_home_explore"):
-        st.session_state.current_page = 'home'
-        st.rerun()
-    
-    # Add the header with image and title
-    col1, col2 = st.columns([1, 5])
-    
-    with col1:
-        try:
-            st.image("analytics_icon.png", width=150)
-        except:
-            st.markdown("# 📊")
-    
-    with col2:
-        st.title("Traffic Prediction App")
-    
-    # Load data
-    data = load_data()
-    
-    if data is None:
-        st.warning("Please ensure data file is available.")
-        uploaded_data = st.file_uploader("Upload traffic data (csv)", type=['csv'])
-        if uploaded_data is not None:
-            data = pd.read_csv(uploaded_data)
-            data.to_csv('traffic.csv', index=False)
-            st.success("Data uploaded successfully! Please refresh the page.")
-        return
-    
-    # Filter data for Junction 1
-    j_1 = data[data['Junction'] == 1].copy()
-    j_1 = create_features(j_1)
-    
-    # Define the features used in the model
-    FEATURES = ['hour', 'dayofweek', 'month', 'year', 'dayofyear', 'dayofmonth', 'weekofyear']
-    
-    st.header("Traffic Data Exploration")
-    
-    # Summary statistics
-    st.subheader("Summary Statistics")
-    st.write(j_1['Vehicles'].describe())
-    
-    # Time series plot
-    st.subheader("Traffic Over Time")
-    
-    # Allow user to select date range
-    min_date = j_1['DateTime'].min().date()
-    max_date = j_1['DateTime'].max().date()
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("Start Date", min_date, min_value=min_date, max_value=max_date, key="explore_start")
-    with col2:
-        end_date = st.date_input("End Date", min(max_date, start_date + timedelta(days=7)), min_value=start_date, max_value=max_date, key="explore_end")
-    
-    # Filter data based on date range
-    filtered_data = j_1[(j_1['DateTime'].dt.date >= start_date) & (j_1['DateTime'].dt.date <= end_date)]
-    
-    # Plot time series
-    fig, ax = plt.subplots(figsize=(12, 6))
-    sns.lineplot(x='DateTime', y='Vehicles', data=filtered_data, ax=ax)
-    ax.set_xlabel('Date')
-    ax.set_ylabel('Number of Vehicles')
-    ax.set_title(f'Traffic Volume from {start_date} to {end_date}')
-    st.pyplot(fig)
-    
-    # Correlation heatmap
-    st.subheader("Feature Correlation")
-    corr = j_1[FEATURES + ['Vehicles']].corr()
-    fig, ax = plt.subplots(figsize=(10, 8))
-    sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax, fmt=".2f")
-    st.pyplot(fig)
-    
-    # Display raw data with pagination
-    st.subheader("Raw Data Sample")
-    page_size = 100
-    page_number = st.number_input("Page", min_value=1, max_value=len(j_1)//page_size + 1, value=1, key="explore_page")
-    start_idx = (page_number - 1) * page_size
-    end_idx = start_idx + page_size
-    st.write(j_1.iloc[start_idx:end_idx])
 
 if __name__ == "__main__":
     main()
